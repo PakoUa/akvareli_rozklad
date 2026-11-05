@@ -2,7 +2,7 @@ name: Weekly light chart
 
 on:
   schedule:
-    - cron: '17 * * * *'
+    - cron: '17,47 * * * *'
   workflow_dispatch:
 
 permissions:
