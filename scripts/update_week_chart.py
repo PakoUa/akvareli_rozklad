@@ -1,8 +1,12 @@
 """Тижнева діаграма «Світло за тиждень» у Telegram-каналі.
 
-Раз на тиждень (перший запуск після півночі понеділка) публікує нове повідомлення з картинкою поточного тижня,
-а решту запусків (щогодини) редагує це ж повідомлення, щоб картинка була актуальною. Коли починається новий
-тиждень, попереднє повідомлення востаннє оновлюється готовою картинкою завершеного тижня.
+Раз на тиждень (перший запуск після півночі понеділка) публікує нове повідомлення з картинкою поточного тижня
+і закріплює його, а решту запусків (кожні 30 хв) редагує це ж повідомлення, щоб картинка була актуальною.
+Коли починається новий тиждень, попереднє повідомлення востаннє оновлюється готовою картинкою завершеного
+тижня і відкріплюється.
+
+Боту потрібні права: публікація, редагування, закріплення повідомлень (і, за бажанням, видалення: щоб
+прибрати службовий рядок «закріплено…»).
 
 Картинка — скріншот сторінки /week воркера (headless Chromium). Стан (тиждень і message_id) лежить у
 state/week_chart.json: його комітить workflow.
@@ -17,6 +21,7 @@ import datetime as dt
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -74,11 +79,59 @@ def tg(method: str, data: dict, png: str) -> dict:
         return {"ok": False, "description": f"HTTP {r.status_code}"}
 
 
-def send_new(png: str, week: dt.date) -> int:
+def call(method: str, payload: dict) -> dict:
+    try:
+        return requests.post(f"{API}/bot{TOKEN}/{method}", json=payload, timeout=30).json()
+    except Exception as e:  # мережа / не JSON
+        return {"ok": False, "description": str(e)}
+
+
+def same_chat(chat: dict) -> bool:
+    if CHAT.startswith("@"):
+        return (chat.get("username") or "").lower() == CHAT[1:].lower()
+    return str(chat.get("id")) == CHAT
+
+
+def remove_pin_notice(pinned_id: int) -> None:
+    """Прибирає службове повідомлення «закріплено…» (потрібне право «Видалення повідомлень»). Помилки не критичні."""
+    for _ in range(4):
+        time.sleep(1.5)
+        r = call("getUpdates", {"offset": -30, "limit": 30, "timeout": 0, "allowed_updates": ["channel_post", "message"]})
+        if not r.get("ok"):
+            print("getUpdates:", r.get("description"))
+            return
+        for u in r.get("result") or []:
+            m = u.get("channel_post") or u.get("message") or {}
+            if (m.get("pinned_message") or {}).get("message_id") == pinned_id and same_chat(m.get("chat") or {}):
+                d = call("deleteMessage", {"chat_id": CHAT, "message_id": m["message_id"]})
+                if not d.get("ok"):
+                    print("deleteMessage (службове):", d.get("description"))
+                return
+    print("службове повідомлення про закріплення не знайдено")
+
+
+def pin(message_id: int) -> bool:
+    r = call("pinChatMessage", {"chat_id": CHAT, "message_id": message_id, "disable_notification": True})
+    if r.get("ok"):
+        remove_pin_notice(message_id)
+        return True
+    print("pinChatMessage:", r.get("description"))
+    return False
+
+
+def unpin(message_id: int) -> None:
+    r = call("unpinChatMessage", {"chat_id": CHAT, "message_id": message_id})
+    d = r.get("description") or ""
+    if not r.get("ok") and "not found" not in d and "not pinned" not in d:
+        print("unpinChatMessage:", d)
+
+
+def send_new(png: str, week: dt.date) -> dict:
     res = tg("sendPhoto", {"chat_id": CHAT, "caption": caption(week), "disable_notification": "true"}, png)
     if not res.get("ok"):
         raise RuntimeError(f"sendPhoto: {res.get('description')}")
-    return res["result"]["message_id"]
+    message_id = res["result"]["message_id"]
+    return {"week": week.isoformat(), "message_id": message_id, "pinned": pin(message_id)}  # одразу закріплюємо
 
 
 def edit(message_id: int, png: str, week: dt.date) -> str:
@@ -112,6 +165,7 @@ def main() -> int:
         else dt.datetime.now(ZoneInfo("Europe/Kyiv")).date()
     cur = monday_of(today)
     state = load_state()
+    old_id = None  # повідомлення минулого тижня: відкріпимо, коли опублікуємо нове
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -121,6 +175,7 @@ def main() -> int:
                 old = dt.date.fromisoformat(state["week"])
                 if render(browser, old, "old.png"):
                     print("минулий тиждень:", edit(state["message_id"], "old.png", old))
+                old_id = state["message_id"]
                 state = {}
 
             if not render(browser, cur, "week.png"):
@@ -132,11 +187,15 @@ def main() -> int:
                 result = edit(state["message_id"], "week.png", cur)
                 print("оновлено:", result)
                 if result == "gone":  # повідомлення видалили вручну: публікуємо заново
-                    state = {"week": cur.isoformat(), "message_id": send_new("week.png", cur)}
+                    state = send_new("week.png", cur)
                     print("опубліковано заново, id", state["message_id"])
+                elif not state.get("pinned"):  # старий стан без закріплення або закріпити не вдалося раніше
+                    state["pinned"] = pin(state["message_id"])
             else:
-                state = {"week": cur.isoformat(), "message_id": send_new("week.png", cur)}
-                print("опубліковано, id", state["message_id"])
+                state = send_new("week.png", cur)
+                print("опубліковано, id", state["message_id"], "закріплено" if state["pinned"] else "НЕ закріплено")
+                if old_id:
+                    unpin(old_id)
         finally:
             browser.close()
 
