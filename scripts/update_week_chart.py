@@ -50,8 +50,11 @@ def span(start: dt.date) -> str:
     return f"{start.day} {MONTHS[start.month - 1]} – {end.day} {MONTHS[end.month - 1]}"
 
 
-def caption(start: dt.date) -> str:
-    return f"📊 Світло за тиждень · {span(start)}"
+def caption(start: dt.date, live: bool = True) -> str:
+    text = f"📊 Світло за тиждень · {span(start)}"
+    if live:  # для завершеного тижня цього рядка немає: повідомлення вже не оновлюється
+        text += "\nЦе повідомлення автоматично оновлюється системою кожні 30 хвилин."
+    return text
 
 
 def render(browser, week: dt.date, path: str) -> bool:
@@ -134,9 +137,9 @@ def send_new(png: str, week: dt.date) -> dict:
     return {"week": week.isoformat(), "message_id": message_id, "pinned": pin(message_id)}  # одразу закріплюємо
 
 
-def edit(message_id: int, png: str, week: dt.date) -> str:
+def edit(message_id: int, png: str, week: dt.date, live: bool = True) -> str:
     """'ok' | 'gone' (повідомлення немає) ; інші помилки — виняток."""
-    media = {"type": "photo", "media": "attach://photo", "caption": caption(week)}
+    media = {"type": "photo", "media": "attach://photo", "caption": caption(week, live)}
     res = tg("editMessageMedia", {"chat_id": CHAT, "message_id": message_id, "media": json.dumps(media)}, png)
     if res.get("ok"):
         return "ok"
@@ -174,7 +177,7 @@ def main() -> int:
             if state.get("message_id") and state.get("week") and state["week"] != cur.isoformat():
                 old = dt.date.fromisoformat(state["week"])
                 if render(browser, old, "old.png"):
-                    print("минулий тиждень:", edit(state["message_id"], "old.png", old))
+                    print("минулий тиждень:", edit(state["message_id"], "old.png", old, live=False))
                 old_id = state["message_id"]
                 state = {}
 
