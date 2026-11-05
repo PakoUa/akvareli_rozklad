@@ -43,8 +43,12 @@ jobs:
         run: python scripts/update_week_chart.py
 
       - name: Зберегти стан
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state/week_chart.json
-          git diff --cached --quiet || (git commit -m "Стан діаграми тижня" && git push)
+  run: |
+    git config user.name "github-actions[bot]"
+    git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+    git add state/week_chart.json
+    git diff --cached --quiet || (
+      git commit -m "Стан діаграми тижня" &&
+      git pull --rebase origin main &&
+      git push
+    )
